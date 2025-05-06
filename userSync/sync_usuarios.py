@@ -1,73 +1,104 @@
 import requests
 import pandas as pd
 
-# Configuración de la API de OctoPrint TEST MADRID
-# OCTOPRINT_URL = "http://127.0.0.1:5000/api"
-# API_KEY = "14B9C1OdVT4lt5DwpwxOLLfmXJZgpCIhNutIATCdWRM"
-
-# TEST Maker5
+# Configuración
 OCTOPRINT_URL = "http://10.37.48.82/maker5/api"
 API_KEY = "DBD040687D844D36A948247CA5451EE1"
-
-# Ruta del archivo Excel
 archivo_excel = r"C:\Users\000092114\Documents\UPBMAKE\userSync\usuarios.xlsx"
 
-# Cargar datos desde el archivo Excel
+# Definir el usuario que NO debe ser degradado ni eliminado
+USUARIO_BLOQUEADO = "tmwhite"
+
+# Cargar Excel
 df = pd.read_excel(archivo_excel)
 
-# Extraer usuarios del Excel
-usuarios_excel = {row["Usuario"]: {"password": row["Password"], "roles": [row["Perfil"]]} for _, row in df.iterrows()}
+# Función para normalizar roles
+def normalizar_roles(perfil, username):
+    perfil = str(perfil).strip().lower()
 
-# Obtener la lista de usuarios actuales en OctoPrint
+    if username == USUARIO_BLOQUEADO:
+        return ["admins", "users"]
+
+    if perfil == "admin":
+        return ["admins", "users"]
+    elif perfil == "operator":
+        return ["users"]
+    else:
+        print(f"Advertencia: perfil inválido para usuario '{username}': '{perfil}'. Usuario ignorado.")
+        return None
+
+# Crear diccionario de usuarios válidos
+usuarios_excel = {}
+for _, row in df.iterrows():
+    username = str(row["Usuario"]).strip()
+    password = str(row["Password"])
+    roles = normalizar_roles(row["Perfil"], username)
+    if roles:
+        usuarios_excel[username] = {
+            "password": password,
+            "roles": roles
+        }
+
+# Obtener usuarios actuales
 headers = {"X-Api-Key": API_KEY}
-users_response = requests.get(f"{OCTOPRINT_URL}/users", headers=headers)
+resp = requests.get(f"{OCTOPRINT_URL}/users", headers=headers)
 
-if users_response.status_code == 200:
-    usuarios_octoprint = {user["name"]: {"roles": user["groups"]} for user in users_response.json()["users"]}
+if resp.status_code == 200:
+    usuarios_octoprint = {
+        user["name"]: {"roles": user["groups"]}
+        for user in resp.json()["users"]
+    }
 
-    # CREAR USUARIOS NUEVOS
+    # Crear nuevos usuarios
     for username, data in usuarios_excel.items():
         if username not in usuarios_octoprint:
             print(f"Creando usuario: {username}")
-            new_user_data = {
+            new_data = {
                 "name": username,
                 "password": data["password"],
                 "roles": data["roles"],
                 "active": True
             }
-            response = requests.post(f"{OCTOPRINT_URL}/users", json=new_user_data, headers=headers)
-            if response.status_code == 201:
-                print(f"Usuario {username} creado correctamente.")
+            r = requests.post(f"{OCTOPRINT_URL}/users", json=new_data, headers=headers)
+            if r.status_code == 201:
+                print(f"Usuario {username} creado.")
             else:
-                print(f"Error al crear usuario {username}: {response.text}")
+                print(f"Error al crear {username}: {r.text}")
 
-    # MODIFICAR USUARIOS EXISTENTES
+    # Actualizar usuarios existentes
     for username, data in usuarios_excel.items():
         if username in usuarios_octoprint:
-            # Si el rol es diferente, lo actualizamos
-            if set(data["roles"]) != set(usuarios_octoprint[username]["roles"]):
-                print(f"Modificando usuario: {username}")
-                update_user_data = {
+            roles_actuales = set(usuarios_octoprint[username]["roles"])
+            roles_deseados = set(data["roles"])
+
+            if roles_actuales != roles_deseados:
+                if username == USUARIO_BLOQUEADO and "admins" not in data["roles"]:
+                    print(f"Usuario protegido '{username}' no se puede degradar.")
+                    continue
+                print(f"Modificando roles de: {username}")
+                update_data = {
                     "password": data["password"],
                     "roles": data["roles"]
                 }
-                response = requests.put(f"{OCTOPRINT_URL}/users/{username}", json=update_user_data, headers=headers)
-                if response.status_code == 204:
-                    print(f"Usuario {username} modificado correctamente.")
+                r = requests.put(f"{OCTOPRINT_URL}/users/{username}", json=update_data, headers=headers)
+                if r.status_code == 204:
+                    print(f"Usuario {username} actualizado.")
                 else:
-                    print(f"Error al modificar usuario {username}: {response.text}")
+                    print(f"Error al actualizar {username}: {r.text}")
 
-    # ELIMINAR USUARIOS QUE YA NO ESTÁN EN EL EXCEL
+    # Eliminar usuarios no presentes en Excel (excepto protegidos)
     for username in usuarios_octoprint:
-        if username not in usuarios_excel:
+        if username not in usuarios_excel and username != USUARIO_BLOQUEADO:
             print(f"Eliminando usuario: {username}")
-            response = requests.delete(f"{OCTOPRINT_URL}/users/{username}", headers=headers)
-            if response.status_code == 204:
-                print(f"Usuario {username} eliminado correctamente.")
+            r = requests.delete(f"{OCTOPRINT_URL}/users/{username}", headers=headers)
+            if r.status_code == 204:
+                print(f"Usuario {username} eliminado.")
             else:
-                print(f"Error al eliminar usuario {username}: {response.text}")
+                print(f"Error al eliminar {username}: {r.text}")
+        elif username == USUARIO_BLOQUEADO:
+            print(f"Usuario protegido '{username}' no se puede eliminar.")
 
 else:
-    print("Error al obtener la lista de usuarios de OctoPrint.")
+    print(f"Error al obtener la lista de usuarios: {resp.status_code} - {resp.text}")
 
-print("Sincronización completada.")
+print("Sincronización finalizada.")
